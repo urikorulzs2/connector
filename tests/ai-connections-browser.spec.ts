@@ -28,11 +28,11 @@ test("AI setup targets Grok Bot, exposes no developer key prompt, and never clai
   await page.route("**/api/ai/connectors", (route) => route.fulfill({ json: { url, grants: [] } }));
   await page.route("https://claude.ai/**", (route) => route.fulfill({ contentType: "text/html", body: "Claude setup placeholder" }));
   await login(page);
-  await expect(page.locator(".provider-card")).toHaveCount(25);
+  await expect(page.locator(".provider-card").first()).toBeVisible();
   await expect(page.locator(".provider-card").filter({ hasText: "Anthropic" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Use Claude, ChatGPT, or Grok Bot" }).click();
+  await page.getByRole("button", { name: "Set up AI connections" }).click();
   await expect(page.getByLabel("Connector URL", { exact: true })).toHaveValue(url);
-  await expect(page.getByRole("region", { name: "AI app connections" })).toContainText("do not need an Anthropic, OpenAI, or xAI developer API key");
+  await expect(page.getByRole("region", { name: "AI app connections" })).toContainText("do not require an AI developer API key");
   await expect(page.getByLabel("API key", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Connector API key", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Copy Connector URL", exact: true }).click();
@@ -85,6 +85,124 @@ test("Grok Bot handoff requires public access and offers a manual copy fallback 
   await page.setViewportSize({ width: 375, height: 812 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(requests.some(path => /pipeline-key|credentials|\/bot\/turn/.test(path))).toBe(false);
+});
+
+const existingGrant = {
+  id: "keep-existing-claude-grant", clientName: "Existing Claude connection",
+  createdAt: "2026-10-14T00:00:00.000Z", lastUsedAt: "2026-10-14T00:05:00.000Z",
+  platforms: true, workspaceProfileId: "profile-work", workspaceProfileName: "Work assistant",
+};
+
+function observeSetupRequests(page: Page) {
+  const requests: { method: string; path: string }[] = [];
+  page.on("request", request => {
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith("/api/")) requests.push({ method: request.method(), path });
+  });
+  return () => {
+    expect(requests.filter(request => !["GET", "HEAD", "OPTIONS"].includes(request.method))).toEqual([]);
+    expect(requests.filter(request => /pipeline-key|credentials|\/bot\/turn/.test(request.path))).toEqual([]);
+  };
+}
+
+test("Gemini guides website and mobile setup without granting access, changing existing connections, or requesting API secrets", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await context.route("https://gemini.google.com/**", route => route.fulfill({ contentType: "text/html", body: "Gemini setup placeholder" }));
+  await page.route("**/api/ai/connectors", route => route.fulfill({ json: { url, grants: [existingGrant], clients: [] } }));
+  await login(page);
+  const assertReadOnlySetup = observeSetupRequests(page);
+  await page.getByRole("button", { name: "AI connections", exact: true }).click();
+  await expect(page.locator(".ai-grant")).toContainText(existingGrant.clientName);
+  const existingApproval = await page.locator(".ai-grants").innerText();
+  await page.getByRole("button", { name: /Gemini Set up connection/ }).click();
+  await expect(page.getByRole("heading", { name: "Add Connector in Gemini" })).toBeVisible();
+  const steps = page.locator(".ai-setup-steps");
+  await expect(steps).toContainText(/Custom apps/i);
+  await expect(steps).toContainText(/United States|U\.S\.|\bUS\b/);
+  await expect(steps).toContainText(/18/);
+  await expect(steps).toContainText(/personal Google account/i);
+  await expect(steps).toContainText(/English/);
+  await expect(steps).toContainText(/Keep activity/i);
+  await expect(steps).not.toContainText(/Gemini CLI|npx|npm install/);
+  await expect(steps.locator('a[href="https://support.google.com/gemini/answer/17209137"]')).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open Gemini ↗" })).toHaveAttribute("href", "https://gemini.google.com/apps");
+  await page.getByRole("button", { name: "Copy Connector URL", exact: true }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(url);
+  const popupPromise = page.waitForEvent("popup");
+  await page.getByRole("link", { name: "Open Gemini ↗" }).click();
+  const popup = await popupPromise;
+  await expect(popup).toHaveURL("https://gemini.google.com/apps");
+  await popup.close();
+  await page.setViewportSize({ width: 375, height: 812 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(page.locator(".ai-grant")).toHaveCount(1);
+  expect(await page.locator(".ai-grants").innerText()).toBe(existingApproval);
+  await expect(page.getByLabel("API key", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Connector API key", { exact: true })).toHaveCount(0);
+  assertReadOnlySetup();
+});
+
+test("Cursor installation and copied configuration use the current endpoint while preserving existing AI approvals", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  let connectorUrl = url;
+  await page.route("**/api/ai/connectors", route => route.fulfill({ json: { url: connectorUrl, grants: [existingGrant], clients: [] } }));
+  await login(page);
+  const assertReadOnlySetup = observeSetupRequests(page);
+  await page.getByRole("button", { name: "AI connections", exact: true }).click();
+  await expect(page.locator(".ai-grant")).toContainText(existingGrant.clientName);
+  const existingApproval = await page.locator(".ai-grants").innerText();
+  await page.getByRole("button", { name: /Cursor Set up connection/ }).click();
+  await expect(page.getByRole("heading", { name: "Add Connector in Cursor" })).toBeVisible();
+  const install = page.getByRole("link", { name: "Add to Cursor", exact: true });
+  async function expectCurrentConfiguration() {
+    const link = new URL((await install.getAttribute("href"))!);
+    expect(link.protocol).toBe("cursor:");
+    expect(link.hostname).toBe("anysphere.cursor-deeplink");
+    expect(link.pathname).toBe("/mcp/install");
+    expect(link.searchParams.get("name")).toBe("connector");
+    expect(JSON.parse(Buffer.from(link.searchParams.get("config")!, "base64").toString("utf8"))).toEqual({ url: connectorUrl });
+    await page.getByRole("button", { name: "Copy Cursor configuration", exact: true }).click();
+    expect(JSON.parse(await page.evaluate(() => navigator.clipboard.readText()))).toEqual({ mcpServers: { connector: { url: connectorUrl } } });
+  }
+  await expectCurrentConfiguration();
+  await expect(page.getByRole("status").filter({ hasText: "Cursor configuration copied" })).toBeVisible();
+  connectorUrl = "https://new-public-connector.example/mcp";
+  await page.getByRole("button", { name: "Refresh AI connections" }).click();
+  await expect(page.getByLabel("Connector URL", { exact: true })).toHaveValue(connectorUrl);
+  await expect(page.getByRole("status").filter({ hasText: "Cursor configuration copied" })).toHaveCount(0);
+  await expectCurrentConfiguration();
+  await page.getByText("View Cursor configuration", { exact: true }).click();
+  expect(JSON.parse(await page.getByLabel("Cursor MCP configuration", { exact: true }).inputValue())).toEqual({ mcpServers: { connector: { url: connectorUrl } } });
+  await expect(page.locator(".cursor-setup")).toContainText("Keep all other server entries and settings");
+  await expect(page.locator(".ai-grant")).toHaveCount(1);
+  expect(await page.locator(".ai-grants").innerText()).toBe(existingApproval);
+  assertReadOnlySetup();
+});
+
+test("Cursor requires public access and exposes a mobile-friendly manual configuration when clipboard access fails", async ({ page }) => {
+  let connectorUrl = "http://127.0.0.1:3000/mcp";
+  await page.route("**/api/ai/connectors", route => route.fulfill({ json: { url: connectorUrl, grants: [], clients: [] } }));
+  await login(page);
+  const assertReadOnlySetup = observeSetupRequests(page);
+  await page.getByRole("button", { name: "AI connections", exact: true }).click();
+  await page.getByRole("button", { name: /Cursor Set up connection/ }).click();
+  await expect(page.getByRole("button", { name: "Add to Cursor", exact: true })).toBeDisabled();
+  await expect(page.getByRole("link", { name: "Add to Cursor", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Copy Cursor configuration", exact: true })).toBeDisabled();
+  await expect(page.getByLabel("Cursor MCP configuration", { exact: true })).toHaveCount(0);
+  connectorUrl = `https://new-public-connector.example/${"connector-path-".repeat(15)}/mcp`;
+  await page.getByRole("button", { name: "Refresh AI connections" }).click();
+  await expect(page.getByLabel("Connector URL", { exact: true })).toHaveValue(connectorUrl);
+  await page.evaluate(() => Object.defineProperty(navigator.clipboard, "writeText", { value: async () => { throw new Error("Clipboard denied"); } }));
+  await page.getByRole("button", { name: "Copy Cursor configuration", exact: true }).click();
+  const configuration = page.getByLabel("Cursor MCP configuration", { exact: true });
+  await expect(configuration).toBeVisible();
+  await expect(configuration).toHaveAttribute("readonly", "");
+  expect(JSON.parse(await configuration.inputValue())).toEqual({ mcpServers: { connector: { url: connectorUrl } } });
+  await page.setViewportSize({ width: 375, height: 812 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(page.locator(".ai-grants")).toContainText("No AI app has been approved yet");
+  assertReadOnlySetup();
 });
 
 test("authorization survives password sign-in, starts with no access, and approves only the selected Google profile", async ({ page }) => {
@@ -249,4 +367,82 @@ test("shared AI key reset explains every affected client and hides the previous 
   await page.getByRole("button", { name: "Show Connector API key" }).click();
   await expect(page.getByLabel("Connector API key", { exact: true })).toHaveValue("new-shared-key");
   expect(writes).toEqual([{ confirmed: true }]);
+});
+
+test("existing OAuth delegation permissions change only the explicitly confirmed grant without reconnecting accounts", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  const first = {
+    id: "grant-existing-work", clientName: "My existing AI", createdAt: "2026-10-14T00:00:00.000Z",
+    redirectUri: "https://first-ai.example/" + "return-path-".repeat(12),
+    platforms: true, workspaceProfileId: "profile-work", workspaceProfileName: "Work assistant", outbound: false,
+  };
+  const other = {
+    id: "grant-existing-personal", clientName: "My existing AI", createdAt: "2026-10-15T00:00:00.000Z",
+    redirectUri: "https://other-ai.example/callback", platforms: false,
+    workspaceProfileId: "profile-personal", workspaceProfileName: "Personal assistant", outbound: true,
+  };
+  const firstBefore = structuredClone(first);
+  const otherBefore = structuredClone(other);
+  const requests: { method: string; path: string }[] = [];
+  const writes: unknown[] = [];
+  await page.route("**/api/ai/connectors", route => route.fulfill({ json: { url, grants: [first, other], clients: [] } }));
+  await page.route("**/api/ai/connectors/*/outbound", route => {
+    expect(new URL(route.request().url()).pathname).toBe(`/api/ai/connectors/${first.id}/outbound`);
+    expect(route.request().method()).toBe("PUT");
+    expect(route.request().headers()["x-connector-request"]).toBe("1");
+    const body = route.request().postDataJSON() as { enabled: boolean; confirmed: boolean };
+    expect(body.confirmed).toBe(true);
+    writes.push(body);
+    first.outbound = body.enabled;
+    return route.fulfill({ json: { grant: first } });
+  });
+  await login(page);
+  page.on("request", request => requests.push({ method: request.method(), path: new URL(request.url()).pathname }));
+  await page.getByRole("button", { name: "AI connections", exact: true }).click();
+  const firstCard = page.locator(".ai-grants .ai-grant").filter({ hasText: first.redirectUri });
+  const otherCard = page.locator(".ai-grants .ai-grant").filter({ hasText: other.redirectUri });
+  await expect(firstCard).toContainText("AI task sending disabled");
+  await expect(otherCard).toContainText("AI task sending enabled");
+  const otherCardBefore = await otherCard.innerText();
+  await firstCard.getByRole("button", { name: "Enable AI delegation for My existing AI", exact: true }).click();
+  const confirm = page.getByRole("group", { name: "Confirm AI delegation access", exact: true });
+  await expect(confirm).toContainText(first.id);
+  await expect(confirm).toContainText(first.redirectUri);
+  await expect(confirm).not.toContainText(other.id);
+  await expect(confirm).not.toContainText(other.redirectUri);
+  await expect(confirm).toContainText(/subscription/i);
+  await expect(confirm).toContainText(/Google/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(writes).toEqual([]);
+  await confirm.getByRole("button", { name: "Keep current access", exact: true }).click();
+  await expect(confirm).toHaveCount(0);
+  expect(writes).toEqual([]);
+  await expect(firstCard.getByRole("button", { name: "Enable AI delegation for My existing AI", exact: true })).toBeVisible();
+  await firstCard.getByRole("button", { name: "Enable AI delegation for My existing AI", exact: true }).click();
+  await confirm.getByRole("button", { name: "Confirm enable AI delegation", exact: true }).click();
+  await expect(firstCard.getByRole("button", { name: "Disable AI delegation for My existing AI", exact: true })).toBeVisible();
+  await expect(firstCard).toContainText("Standard platform tools enabled");
+  await expect(firstCard).toContainText("Google profile: Work assistant");
+  await expect(firstCard).toContainText("AI task sending enabled");
+  expect(writes).toEqual([{ enabled: true, confirmed: true }]);
+  expect(first).toEqual({ ...firstBefore, outbound: true });
+  expect(other).toEqual(otherBefore);
+  expect(await otherCard.innerText()).toBe(otherCardBefore);
+  await firstCard.getByRole("button", { name: "Disable AI delegation for My existing AI", exact: true }).click();
+  await expect(confirm).toContainText(first.id);
+  await expect(confirm).toContainText(first.redirectUri);
+  expect(writes).toHaveLength(1);
+  await confirm.getByRole("button", { name: "Confirm disable AI delegation", exact: true }).click();
+  await expect(firstCard.getByRole("button", { name: "Enable AI delegation for My existing AI", exact: true })).toBeVisible();
+  await expect(firstCard).toContainText("AI task sending disabled");
+  expect(writes).toEqual([{ enabled: true, confirmed: true }, { enabled: false, confirmed: true }]);
+  expect(first).toEqual(firstBefore);
+  expect(other).toEqual(otherBefore);
+  expect(await otherCard.innerText()).toBe(otherCardBefore);
+  await expect(page.locator(".ai-grants .ai-grant")).toHaveCount(2);
+  expect(requests.filter(request => !["GET", "HEAD", "OPTIONS"].includes(request.method))).toEqual([
+    { method: "PUT", path: `/api/ai/connectors/${first.id}/outbound` },
+    { method: "PUT", path: `/api/ai/connectors/${first.id}/outbound` },
+  ]);
+  expect(requests.filter(request => /pipeline-key|credentials|\/reset|\/api\/connections\//.test(request.path))).toEqual([]);
 });

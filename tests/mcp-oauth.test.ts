@@ -119,6 +119,71 @@ test('refresh tokens rotate and replay revokes the entire token family but not a
   assert.throws(() => f.oauth.token({ client_id: f.client.client_id, grant_type: 'refresh_token', refresh_token: refreshed.refresh_token }), oauthError('invalid_grant'));
 });
 
+test('owner delegation changes preserve existing tokens, platform access, Workspace access and other grants', t => {
+  const f = fixture(t);
+  const profile = f.workspace.createProfile({ name: 'Existing profile', bindings: [] }).profile;
+  const first = exchange(f, code(f, { platforms: true, workspaceProfileId: profile.id }));
+  const second = exchange(f, code(f, { platforms: true }));
+  const firstId = f.oauth.assertCurrent(first.access_token).grantId;
+  const secondAuthorization = f.oauth.assertCurrent(second.access_token);
+  const before = f.store.readSetting<Record<string, unknown>>('mcp.oauth.v1')!;
+  const profiles = f.workspace.listProfiles();
+  assert.equal(f.oauth.setOutbound(firstId, true).outbound, true);
+  assert.deepEqual(f.oauth.assertCurrent(first.access_token), { grantId: firstId, platforms: true, outbound: true, workspaceProfileId: profile.id });
+  assert.deepEqual(f.oauth.assertCurrent(second.access_token), secondAuthorization);
+  const after = f.store.readSetting<Record<string, unknown>>('mcp.oauth.v1')!;
+  for (const field of ['clients', 'pending', 'codes', 'access', 'refresh']) assert.deepEqual(after[field], before[field], field);
+  const beforeGrants = before.grants as { id: string; outbound?: boolean }[];
+  assert.deepEqual(after.grants, beforeGrants.map(grant => grant.id === firstId ? { ...grant, outbound: true } : grant));
+  assert.deepEqual(f.workspace.listProfiles(), profiles);
+  assert.equal(f.oauth.connections().grants.find(grant => grant.id === firstId)?.outbound, true);
+
+  const refreshed = f.oauth.token({ client_id: f.client.client_id, grant_type: 'refresh_token', refresh_token: first.refresh_token });
+  assert.equal(f.oauth.assertCurrent(refreshed.access_token).outbound, true);
+  assert.equal(f.oauth.setOutbound(firstId, false).outbound, false);
+  assert.equal(f.oauth.assertCurrent(first.access_token).outbound, false);
+  assert.deepEqual(f.oauth.assertCurrent(refreshed.access_token), { grantId: firstId, platforms: true, outbound: false, workspaceProfileId: profile.id });
+  assert.deepEqual(f.oauth.assertCurrent(second.access_token), secondAuthorization);
+  const restarted = new McpOAuth(f.config, f.store, f.workspace);
+  assert.equal(restarted.assertCurrent(refreshed.access_token).outbound, false);
+});
+
+test('an owner can disable and re-enable only outbound access without silently granting other tools', t => {
+  const f = fixture(t);
+  const token = exchange(f, code(f, { outbound: true }));
+  const id = f.oauth.assertCurrent(token.access_token).grantId;
+  f.oauth.setOutbound(id, false);
+  assert.deepEqual(f.oauth.assertCurrent(token.access_token), { grantId: id, platforms: false, outbound: false });
+  const refreshed = f.oauth.token({ client_id: f.client.client_id, grant_type: 'refresh_token', refresh_token: token.refresh_token });
+  assert.deepEqual(f.oauth.assertCurrent(refreshed.access_token), { grantId: id, platforms: false, outbound: false });
+  f.oauth.setOutbound(id, true);
+  assert.deepEqual(f.oauth.assertCurrent(refreshed.access_token), { grantId: id, platforms: false, outbound: true });
+});
+
+test('delegation permission updates reject nonbooleans and cannot revive revoked, expired or wrong-origin grants', t => {
+  const f = fixture(t);
+  const token = exchange(f);
+  const id = f.oauth.assertCurrent(token.access_token).grantId;
+  for (const value of [undefined, null, 'true', 'false', 0, 1, {}, []]) {
+    assert.throws(() => f.oauth.setOutbound(id, value), /Choose whether/);
+    assert.equal(f.oauth.assertCurrent(token.access_token).outbound, false);
+  }
+  assert.throws(() => f.oauth.setOutbound('missing-grant', true), /expired or was revoked/);
+  f.oauth.disconnect(id);
+  assert.throws(() => f.oauth.setOutbound(id, true), /expired or was revoked/);
+  assert.equal(f.oauth.authenticate(token.access_token), null);
+
+  const expired = exchange(f); const expiredId = f.oauth.assertCurrent(expired.access_token).grantId;
+  const future = new Date(f.oauth.connections().grants.find(grant => grant.id === expiredId)!.expiresAt).getTime() + 1;
+  const time = t.mock.method(Date, 'now', () => future);
+  assert.throws(() => f.oauth.setOutbound(expiredId, true), /expired or was revoked/);
+  time.mock.restore();
+
+  const rebound = exchange(f); const reboundId = f.oauth.assertCurrent(rebound.access_token).grantId;
+  f.config.origin = 'https://another-connector.example';
+  assert.throws(() => f.oauth.setOutbound(reboundId, true), /expired or was revoked/);
+});
+
 test('refresh cannot change client, resource or scope and foreign revocations do not affect a grant', t => {
   const f = fixture(t); const first = exchange(f); const other = f.oauth.register({ redirect_uris: ['https://other.example/callback'] });
   for (const body of [{ client_id: other.client_id }, { resource: 'https://other.example/mcp' }, { scope: 'mcp:tools' }]) assert.throws(() => f.oauth.token({ client_id: f.client.client_id, grant_type: 'refresh_token', refresh_token: first.refresh_token, ...body }));
@@ -165,6 +230,60 @@ test('Workspace-only and combined grants stay bound to owner-selected live profi
   assert.ok(f.oauth.authenticate(both.access_token));
   assert.throws(() => f.oauth.assertCurrent(one.access_token), /expired or was revoked/);
   assert.equal(f.oauth.connections().grants.length, 1);
+});
+
+test('AI task delegation requires an explicit boolean approval and can be granted without platform or Google access', t => {
+  const f = fixture(t);
+  const id = pending(f);
+  assert.equal(f.oauth.consent(id, f.session).requestedAccess.outbound, true);
+  for (const outbound of ['true', 'false', 1, null, [], {}]) {
+    assert.throws(() => f.oauth.approve(id, f.session, { approve: true, outbound }), /delegate tasks/);
+  }
+  assert.throws(() => f.oauth.approve(id, f.session, { approve: true, outbound: false }), /Select platform access/);
+  assert.equal(f.oauth.connections().grants.length, 0);
+  const authCode = new URL(f.oauth.approve(id, f.session, { approve: true, outbound: true }).redirectUrl).searchParams.get('code')!;
+  const token = exchange(f, authCode);
+  const grant = f.oauth.assertCurrent(token.access_token);
+  assert.equal(grant.outbound, true);
+  assert.equal(grant.platforms, false);
+  assert.equal(grant.workspaceProfileId, undefined);
+  assert.equal(f.oauth.connections().grants[0].outbound, true);
+  f.oauth.disconnect(grant.grantId);
+  assert.equal(f.oauth.authenticate(token.access_token), null);
+  assert.throws(() => f.oauth.token({ client_id: f.client.client_id, grant_type: 'refresh_token', refresh_token: token.refresh_token }), oauthError('invalid_grant'));
+});
+
+test('old platform and Google approvals remain connected without gaining AI delegation after restart or token refresh', t => {
+  const f = fixture(t);
+  const profile = f.workspace.createProfile({ name: 'Existing Google assistant', bindings: [] }).profile;
+  const token = exchange(f, code(f, { platforms: true, workspaceProfileId: profile.id }));
+  const saved = f.store.readSetting<{ grants: { outbound?: boolean }[] }>('mcp.oauth.v1')!;
+  for (const grant of saved.grants) delete grant.outbound;
+  f.store.writeSetting('mcp.oauth.v1', saved);
+  const restarted = new McpOAuth(f.config, f.store, new WorkspaceAccounts(f.config, f.store, {}));
+  const existing = restarted.assertCurrent(token.access_token);
+  assert.equal(existing.platforms, true);
+  assert.equal(existing.workspaceProfileId, profile.id);
+  assert.equal(existing.outbound, false);
+  assert.equal(restarted.connections().grants[0].outbound, false);
+  const renewed = restarted.token({ client_id: f.client.client_id, grant_type: 'refresh_token', refresh_token: token.refresh_token, outbound: true });
+  assert.deepEqual(restarted.assertCurrent(renewed.access_token), existing, 'token refresh cannot escalate the original approval');
+  const newStandardToken = exchange(f, code(f, { platforms: true }, { outbound: true }));
+  assert.equal(f.oauth.assertCurrent(newStandardToken.access_token).outbound, false, 'client authorization parameters cannot select owner consent');
+});
+
+test('explicit AI delegation remains attached to the approved grant across service restart and refresh', t => {
+  const f = fixture(t);
+  const selected = f.workspace.createProfile({ name: 'Selected Google assistant', bindings: [] }).profile;
+  const token = exchange(f, code(f, { platforms: true, workspaceProfileId: selected.id, outbound: true }));
+  const original = f.oauth.assertCurrent(token.access_token);
+  const restarted = new McpOAuth(f.config, f.store, new WorkspaceAccounts(f.config, f.store, {}));
+  assert.deepEqual(restarted.assertCurrent(token.access_token), original);
+  const renewed = restarted.token({ client_id: f.client.client_id, grant_type: 'refresh_token', refresh_token: token.refresh_token });
+  assert.deepEqual(restarted.assertCurrent(renewed.access_token), original);
+  assert.equal(restarted.connections().grants.find(grant => grant.id === original.grantId)?.outbound, true);
+  const separate = exchange(f, code(f, { platforms: true, outbound: false }));
+  assert.equal(restarted.assertCurrent(separate.access_token).outbound, false, 'approval is per grant, not per registered client');
 });
 
 test('owner revocation is immediate for access, refresh and pending authorized code', t => {

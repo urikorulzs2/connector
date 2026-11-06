@@ -1,12 +1,14 @@
 # Connector
 
-A self-hosted delivery connector for Claude, ChatGPT, Grok Bot, and other clients. Claude and ChatGPT use MCP; the Grok Bot setup card prepares instructions for calling the HTTPS API from its cloud computer. Create and manage your content in your AI app; Connector authenticates your accounts and executes supported official platform API actions.
+A self-hosted delivery connector for Claude, ChatGPT, Gemini, Cursor, Grok Bot, and other clients. Claude, ChatGPT, Gemini, and Cursor use MCP; the Grok Bot setup card prepares instructions for calling the HTTPS API from its cloud computer. Create and manage your content in your AI app; Connector authenticates your accounts and executes supported official platform API actions.
 
 The dashboard guides you through setup, account connections, and AI-agent access. The MCP tools handle publishing, scheduling, supported comment/DM replies, analytics, campaign operations, conversion uploads, and spend reports. Each platform exposes a different subset; discover its exact actions with `list_actions`. Unsupported API features are not simulated.
 
 **Google Workspace** has a separate multi-account area: connect several Google accounts, then give each AI agent an explicit set of accounts and apps. **Obsidian** reads and writes Markdown notes in the vault on your PC that Obsidian Sync keeps up to date.
 
-**Connect your AI client.** In **AI connections**, follow Claude or ChatGPT's MCP OAuth instructions, or copy the Grok Bot setup message and supply a Connector-generated key through its secure secret flow. These routes do not require an Anthropic, OpenAI, or xAI developer account or API key. Availability of custom connectors depends on the AI app, your plan, and workspace policies; see the [step-by-step AI connection guide](docs/ai-connections.md).
+**Connect your AI client.** In **AI connections**, follow Claude, ChatGPT, Gemini, or Cursor's MCP OAuth instructions, or copy the Grok Bot setup message and supply a Connector-generated key through its secure secret flow. These connections do not require a model-provider developer account or API key. Your AI product supplies model access under its own plan. Availability of custom connectors depends on the AI app, your plan, and workspace policies; see the [step-by-step AI connection guide](docs/ai-connections.md).
+
+**Let your AI delegate to another AI.** In **AI connections → Send tasks to AI agents**, configure outbound delegation through the official Claude Code, Codex, and Antigravity clients, Cursor Cloud Agents, or a Grok Bot routine webhook. Authorize the AI that should coordinate the work; it writes the task instructions, sends them through Connector, and retrieves the result. The dashboard handles setup and monitoring. A Grok webhook records acceptance only, with results in the Bot’s chat. Existing plan limits and enabled overages apply. See [outbound AI setup](docs/outbound-ai.md) for sign-in, model selection, permissions, and task tools.
 
 ## Start on your Windows PC — no terminal commands
 
@@ -15,7 +17,7 @@ The dashboard guides you through setup, account connections, and AI-agent access
 3. Choose your workspace password in the welcome screen.
 4. Open **Settings**, follow the link to ngrok's **Your Authtoken** page, paste its token, and click **Start public access**. No separate ngrok installation or command is needed. Connector saves the token encrypted and reconnects on later launches until you stop public access.
 5. Click **Open public workspace**, sign in with the password you chose, and click **Connect account** on a platform. If application credentials are required, the app presents a guided form, a developer-portal link, and a copyable callback address. Save credentials directly in the interface; changes apply immediately.
-6. Open **AI connections** and choose Claude, ChatGPT, or Grok Bot. For Grok Bot, click **Copy instructions for Grok Bot** and send that message to your Bot. For Claude or ChatGPT, follow the card's custom connector instructions. Complete the specified OAuth or secure-key setup, then verify an actual account-list request. See the [complete setup guide](docs/ai-connections.md).
+6. Open **AI connections** and choose Claude, ChatGPT, Gemini, Cursor, or Grok Bot. For Grok Bot, click **Copy instructions for Grok Bot** and send that message to your Bot. For an MCP client, follow its card's connection instructions; Cursor includes an **Add to Cursor** button. Complete the specified OAuth or secure-key setup, then verify an actual account-list request. See the [complete setup guide](docs/ai-connections.md).
 
 The launcher supports Windows 10/11 x64 and ARM64 and needs Internet access for its first installation. It uses port 3000. After startup, closing its window with **X** hides it and leaves Connector running, as does closing the browser. Right-click the Connector icon beside the clock (check the **Show hidden icons** arrow if needed) to open the dashboard, view the status log, or **Stop Connector**. Your PC must stay on, awake, signed in, and online for scheduled posts and remote access. See [Windows use and troubleshooting](docs/windows.md).
 
@@ -43,19 +45,21 @@ On Windows, extract the new download, right-click Connector's icon beside the cl
 
 An app update does not require authorizing every account again. A platform may still require authorization if it revokes access, a token can no longer refresh, or an added action needs new permissions. Keep the same public address for your AI clients; if your tunnel address changes, update their connector URL.
 
-## Connect Claude, ChatGPT, or Grok Bot
+## Connect Claude, ChatGPT, Gemini, Cursor, or Grok Bot
 
 Connector provides an HTTPS API authenticated with a Connector key and a public MCP endpoint with OAuth sign-in and permission approval. Your AI client supplies the model access; Connector supplies the tools. Plan eligibility and custom connector support depend on the client. You do not paste your AI account password or subscription token into Connector.
 
 1. Start Connector and turn on public access in **Settings**. Keep your PC awake and online; Connector can run in the notification area with its window and browser closed.
 2. Connect the destination accounts your AI should use. For Google Workspace, create a profile with the allowed accounts and apps.
 3. Open **AI connections** and follow the relevant card. For **Grok Bot**, install it from [x.ai/bot](https://x.ai/bot), sign in through Cursor, and open or create your Bot. Click **Copy instructions for Grok Bot** and send that message to it. The message includes your public API address and request instructions without secrets.
-4. For Grok Bot, reveal the appropriate Connector key and enter it through a supported masked secret request or a masked prompt using **Take over**. The Bot calls Connector's HTTPS API from its cloud computer. For Claude or ChatGPT, add a custom MCP connector using the displayed `/mcp` URL and OAuth, then approve the intended access in Connector.
+4. For Grok Bot, reveal the appropriate Connector key and enter it through a supported masked secret request or a masked prompt using **Take over**. The Bot calls Connector's HTTPS API from its cloud computer. For Claude, ChatGPT, Gemini, or Cursor, add the MCP connection using the displayed `/mcp` URL and OAuth, then approve the intended access in Connector.
 5. Ask for an account list without changes and inspect the actual response. REST key requests do not appear in **Approved AI connections**, which lists OAuth grants. Only after this check should you request writes.
+
+**Gemini** connects through **Settings → Connected Apps → Custom apps** on its website, then can use the connection on web and mobile. Google's current requirements are US availability, English, age 18+, a personal Google Account, and Keep Activity on. **Cursor** has an **Add to Cursor** button plus a configuration fallback. Adding either AI connection preserves your existing platform accounts. Follow the [Gemini and Cursor setup steps](docs/ai-connections.md#gemini-website-and-mobile-app).
 
 Grok Bot's [official documentation](https://docs.x.ai/grok-bot/computer-and-apps) confirms that **all Bots on one account share files, browser sessions, and command-line credentials**. Plugin access is also account-wide. Connector enforces permissions per credential, but separate profiles cannot isolate Bots that can access one another's keys on that computer. The general Connector key permits all standard platforms; Workspace profile keys permit only their assigned Google accounts and apps. Follow the [Grok Bot guide](docs/ai-connections.md#grok-bot) for the full steps.
 
-The documented **Connect apps** marketplace flow does not establish a custom MCP installation path or list this project as a plugin. Grok Bot's setup therefore uses the existing authenticated HTTPS API; a live Bot call still needs verification. Its cloud computer does not host Connector for you, so the Connector PC must remain awake and online.
+Grok Bot's current documentation supports adding an external MCP server by URL or command. Connector's guided Bot setup also supports its authenticated HTTPS API; a live Bot call still needs verification. Its cloud computer does not host Connector for you, so the Connector PC must remain awake and online.
 
 Follow the [complete click-by-click guide](docs/ai-connections.md), including authentication choices and connection checks. The [protocol guide](docs/pipeline.md) covers advanced key authentication, REST, confirmation, and scheduling. The optional xAI API client below is a separate, billed developer API feature; it does not connect Grok Bot.
 
@@ -78,7 +82,7 @@ For code changes, run `npm run build` to rebuild the interface and `npm run dev`
 
 | Group | Connections | Setup instructions |
 | --- | --- | --- |
-| AI clients | Claude, ChatGPT, and compatible MCP clients; Grok Bot through the HTTPS API | [AI connection instructions](docs/ai-connections.md); no AI developer key required. |
+| AI clients | Claude, ChatGPT, Gemini, and Cursor through MCP; Grok Bot through the HTTPS API | [AI connection instructions](docs/ai-connections.md); no AI developer key required. |
 | Optional developer AI APIs | OpenAI API, Anthropic API, xAI API | Advanced integrations only. Developer API accounts and billing are separate from the AI app connection above. |
 | Meta | Facebook Pages, Instagram professional accounts, Threads, Meta Business Manager | [Meta setup](docs/providers-meta.md) |
 | Google | YouTube, Google Ads, Google Analytics, Google Search Console | [Google setup](docs/providers-google.md) |
@@ -117,7 +121,7 @@ This is a single-owner app: one connection per standard platform, with multiple 
 
 Provider credentials, dashboard settings, queued publication payloads, and saved action results are encrypted with AES-256-GCM before they enter SQLite. A dashboard-chosen password is stored as a salted scrypt hash inside encrypted settings. Browser sessions use HttpOnly cookies, server-side expiry, and CSRF protection. OAuth state is bound to the initiating session and consumed once. Public HTTPS sessions use secure cookies; the explicitly configured local desktop dashboard keeps its own session. Saved provider credentials are never returned in dashboard or tool responses.
 
-OAuth access for AI clients is limited to standard platform tools and/or the Google Workspace profile approved by the owner. Review and revoke individual grants in **AI connections** without disconnecting the underlying accounts. Advanced key authentication remains supported: the general connector key grants access to standard platforms, including the local Obsidian vault; Google Workspace profile keys are restricted to their assigned Google accounts and apps. Never share the general key when a narrower OAuth grant is sufficient.
+OAuth access for AI clients is limited to the standard platform tools, Google Workspace profile, and separate outbound AI delegation permission approved by the owner. Existing grants do not gain outbound permission automatically. In **AI connections → Approved AI connections**, explicitly enable or disable delegation for one live grant without reconnecting or changing its other access; individual grants can also be revoked. Advanced key authentication remains supported: the general connector key grants access to standard platforms, including the local Obsidian vault; outbound delegation requires an additional owner opt-in. Key-based clients do not appear in the OAuth approval list. Google Workspace profile keys are restricted to their assigned Google accounts and apps. Never share the general key when a narrower OAuth grant is sufficient.
 
 The desktop launcher uses a random, single-use, ten-minute local sign-in capability, removed from the browser address before normal use. It is not a public registration endpoint. Start and complete account authorization on the public dashboard after enabling HTTPS; local and public hostnames have separate browser sessions.
 

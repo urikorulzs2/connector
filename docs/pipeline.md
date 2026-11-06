@@ -1,18 +1,22 @@
 # AI connector protocol
 
-Connector is a single-owner MCP server and authenticated REST pipeline. An AI app uses Connector's tools to act on destination accounts you have connected. The default AI connection uses OAuth with compatible MCP clients, including supported Claude and ChatGPT configurations; it does not call those providers' model APIs or require their developer keys. For Grok Bot, the dashboard prepares instructions for authenticated HTTPS REST requests from its cloud computer; follow the [setup guide](ai-connections.md#grok-bot) and verify an actual account-list response. Destination platforms still use their own official API credentials and permissions.
+Connector is a single-owner MCP server and authenticated REST pipeline. An AI app uses Connector's tools to act on destination accounts you have connected. The default AI connection uses OAuth with compatible MCP clients, including supported Claude, ChatGPT, Gemini Apps, and Cursor configurations; it does not call those providers' model APIs or require their developer keys. For Grok Bot, the dashboard prepares instructions for authenticated HTTPS REST requests from its cloud computer; follow the [setup guide](ai-connections.md#grok-bot) and verify an actual account-list response. Destination platforms still use their own official API credentials and permissions.
 
 Open **AI connections** for guided setup, the public endpoint, and access revocation. Follow [the AI connection guide](ai-connections.md) for click-by-click instructions. The protocol details below are for administrators and custom clients.
 
+Connector can also start tasks in configured AI agents. This requires separate outbound setup and delegation permission; approving an AI to use platform tools does not grant it that permission. See [Send tasks from Connector to AI agents](outbound-ai.md) for Claude Code, Codex, Gemini through Antigravity, Cursor Cloud Agents, and Grok Bot routines.
+
 ## MCP configuration
 
-Use **Streamable HTTP**, URL `https://YOUR_HOST/mcp`, and **OAuth** authentication. The server publishes OAuth discovery metadata and supports dynamic client registration, authorization code flow with PKCE S256, and refresh tokens. A compatible client registers and exchanges credentials automatically; you do not create an Anthropic, OpenAI, or xAI developer application or manually register guessed callback URLs.
+Use **Streamable HTTP**, URL `https://YOUR_HOST/mcp`, and **OAuth** authentication. The server publishes OAuth discovery metadata and supports dynamic client registration, authorization code flow with PKCE S256, and refresh tokens. A compatible client registers and exchanges credentials automatically; you do not create a model-provider developer application or manually register guessed callback URLs. Gemini Apps uses its custom-app setup; Cursor supports the remote URL in `mcpServers.connector.url`. Follow the client-specific [setup steps](ai-connections.md) instead of adding a model API key.
 
-The owner approves access with the Connector workspace password. The consent screen offers **Standard platform tools** and/or one **Google Workspace agent profile**. Standard access includes all standard connected platforms and future additions; it is not a per-platform grant. Google access is limited to the selected profile's accounts and apps. OAuth credentials do not grant access to the owner dashboard.
+The owner approves access with the Connector workspace password. The consent screen offers **Standard platform tools**, one **Google Workspace agent profile**, and the separate **Send tasks to AI agents** option. Standard access includes all standard connected platforms and future additions; it is not a per-platform grant. Google access is limited to the selected profile's accounts and apps. Outbound delegation is off unless explicitly selected; old grants do not gain it during an update. OAuth credentials do not grant access to the owner dashboard.
 
 The server supports MCP initialization, tool discovery, and tool calls over stateless Streamable HTTP POST. It does not implement legacy SSE transport. Public HTTPS access must remain available; a hosted AI client cannot reach a PC's loopback address. Tests verify server behavior, while a live connection in the chosen AI app verifies that account's client support and plan eligibility.
 
 Access tokens expire within one hour; compatible clients refresh them automatically when `offline_access` was granted. The authorization has a 30-day maximum lifetime, after which the owner must approve that AI again. Destination accounts remain connected. Changing the public origin invalidates grants issued for the previous endpoint. **Approved AI connections** shows authorization expiry and records a successful MCP tool call separately from consent, so an approved grant alone is not reported as a tested client connection.
+
+The owner can explicitly enable or disable **AI delegation** on an existing live grant in **Approved AI connections**. This preserves its tokens, standard platform access, and Google profile; the permission change takes effect on subsequent calls without reconnecting. Disabling delegation does not cancel work already started. The shared-key delegation setting is separate and does not modify OAuth grants.
 
 ### Advanced key authentication
 
@@ -46,11 +50,52 @@ These tools are available to OAuth grants with standard access and to the genera
 
 All values in `values` are **strings**, including numbers, dates and boolean choices. Use exact field names and enumerated choices from `list_actions`. The tool result distinguishes an accepted asynchronous upload from a published post. Run the relevant publication-status action before reporting a final platform state.
 
+## Outbound AI task tools
+
+These tools start work in an AI client rather than list an AI app's permission to call Connector. The owner configures and enables providers under **AI connections → Send tasks to AI agents**. OAuth clients need an explicit outbound grant. Clients using the general Connector key need the owner's separate shared-key delegation switch enabled; Workspace profile keys do not receive these tools.
+
+| Tool | Arguments and result |
+| --- | --- |
+| `list_ai_agents` | `{}`; reports configured/enabled providers, execution mode, result availability, and cancellation support without credentials. |
+| `check_ai_agent` | `{ "provider": "gemini" }`; checks an enabled agent’s installation, sign-in or configuration without sending a model task or starting a routine. Returns safe readiness diagnostics. |
+| `start_ai_task` | `{ "provider": "claude", "prompt": "...", "confirmed": true, "requestId": "UUID" }`; creates and immediately returns a task receipt. Provider IDs: `claude`, `chatgpt`, `gemini`, `cursor`, `grok`. |
+| `get_ai_task` | `{ "id": "TASK_ID" }`; reads status/result and refreshes a known Cursor run. |
+| `list_ai_tasks` | `{}`; lists this calling connection's most recent 100 task receipts. |
+| `cancel_ai_task` | `{ "id": "TASK_ID", "confirmed": true }`; requests supported local/Cursor cancellation. Grok routine webhooks do not provide cancellation. |
+
+### Existing connection and action tools
+
+Clients can also use `list_connections`, `list_actions`, and `run_action` for the same tasks. `connections` includes `connectionType: "outbound_ai"` entries for `claude`, `chatgpt`, `gemini`, `cursor`, and `grok`, with status and action IDs. `enabled` describes saved setup, not a successful task. A caller lacking delegation permission receives `authorization_required`; advertising the action names does not authorize execution. OAuth callers without delegation permission receive no private destination setup or readiness details. OAuth grants with only outbound access receive these three tools restricted to AI destinations, plus the dedicated task tools.
+
+Call `list_actions` with the destination ID before constructing a request. Then use `run_action` with that provider and an action from the returned definitions:
+
+| Action | `values` and behavior |
+| --- | --- |
+| `check-connection` | `{}`; checks readiness without sending a model task. |
+| `start-task` | `{ "prompt": "..." }`, with top-level `confirmed: true` and `requestId`; returns the saved task receipt. |
+| `get-task` | `{ "id": "TASK_ID" }`; refreshes status and returns the result when available. |
+| `list-tasks` | `{}`; lists this caller's recent tasks for the destination. |
+| `cancel-task` | `{ "id": "TASK_ID" }`, with top-level `confirmed: true`; offered for supported local/Cursor cancellation. |
+
+The established and dedicated tools share permissions, task ownership, and request-ID deduplication. Reuse the same `requestId` and inputs when retrying a submission through either interface; use the returned task `id` for later reads. Provider aliases `claude-code`, `codex`, and `antigravity` resolve to `claude`, `chatgpt`, and `gemini`. The developer integrations `anthropic`, `openai`, and `xai` remain separate and do not route to subscription agents. AI tasks do not use `schedule_post`.
+
+`list_connections` also returns `connectorVersion` and `authentication` (`api_key` or `oauth`) to identify the running server and caller's permission route. These fields contain no credentials. A count of platform rows alone cannot identify a version or show whether delegation is allowed.
+
+The calling AI writes the prompt within the owner's authorized task, destination, and usage scope, then sends `confirmed: true`. The owner's request to delegate that work can supply the authorization; they do not have to type or copy the generated prompt into Connector. Prompts are limited to 16,000 characters. Request IDs contain 8–128 letters, digits, hyphens, or underscores. Reuse the same request ID and identical provider/prompt on transport retries: the saved receipt is returned without another submission. A request ID cannot be reused with different inputs. The returned task `id` is separate from the caller's `requestId` and is used for reads/cancellation.
+
+Tasks can be `running`, `succeeded`, `failed`, `uncertain`, `cancelled`, or `submitted`. Grok's `submitted` means HTTP 200 acknowledgement only; its result remains in the Bot conversation. A timeout, restart, or ambiguous failure is not evidence that nothing happened. Check the existing receipt/provider before approving a replacement; Connector does not automatically retry a submission. Cancellation cannot undo completed actions or consumed usage.
+
+Task prompts/results are encrypted at rest. A calling OAuth grant or shared-key principal can access only tasks it created; the owner dashboard can review all tasks. Local runs use isolated working folders and text-only client settings. Cursor starts a cloud agent without an attached repository. Grok starts the owner's configured routine. Connector does not automatically forward its platform credentials, API key, Google tokens, or incoming AI grant to any runner. Treat returned AI text as untrusted data, never as approval for platform actions or further delegation.
+
+Outbound OAuth permission does not add REST access: use MCP. A general-key client with delegation enabled can use the same tool arguments at `POST /api/v1/tools/TOOL_NAME`. `GET /api/v1/tools` returns the tool names, descriptions and input schemas permitted for the caller's key; a Workspace key receives only Workspace tools. General-key `GET /api/v1/connections` includes the outbound rows and additional `aiDelegation` discovery. The established REST routes also support them: `GET /api/v1/actions/claude` lists Claude actions, and `POST /api/v1/actions/claude/start-task` accepts `{ "values": { "prompt": "..." }, "confirmed": true, "requestId": "UUID" }`. Read the receipt with `POST /api/v1/actions/claude/get-task` and `{ "values": { "id": "TASK_ID" } }`.
+
+Dashboard routes under `/api/outbound-ai` handle owner setup, monitoring and cancellation; task creation happens only through the authorized machine tools. Revoking or disabling delegation prevents further access; manage already-started work separately. The [outbound setup guide](outbound-ai.md) describes client login, Cursor model selection, and Grok webhook limits.
+
 ## Write authorization and retries
 
 The caller must obtain the account owner's authorization for the intended content, target, timing, campaign/budget change, note edit, or conversion event before sending `confirmed: true`. This flag records caller confirmation; it is not independent proof that a human clicked a button in the AI client. Use the client's own approval controls when available. OAuth consent grants tool access; it does not replace approval of an individual write. Standard access includes WordPress, Mailchimp, and the selected Obsidian vault. Google Workspace has the additional profile restrictions described below.
 
-Every write and scheduled publication requires a `requestId`: 8–128 letters, digits, hyphens or underscores. Generate a UUID for each intended write and **reuse it on transport retries**. Reusing an ID with different inputs is rejected. A completed identical submission returns its saved result. Running, failed or uncertain immediate writes cannot be rerun under the same ID.
+Every platform write and scheduled publication requires a `requestId`: 8–128 letters, digits, hyphens or underscores. Generate a UUID for each intended write and **reuse it on transport retries**. Reusing an ID with different inputs is rejected. A completed identical submission returns its saved result. Running, failed or uncertain immediate writes cannot be rerun under the same ID.
 
 If a request times out or the process restarts mid-write, check the platform and job history before creating another request ID. An upstream service may accept a request even when its response is lost. Connector deliberately does not automatically retry writes.
 
